@@ -51,6 +51,18 @@ services:
       timeout: 5s
       retries: 5
 
+  frontend:
+    build:
+      context: ./frontend
+    container_name: rl-frontend
+    ports:
+      - "3000:80"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
   worker:
     build:
       context: ./backend

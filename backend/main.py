@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from core.database import async_session, init_db
@@ -34,6 +35,26 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+from routes.tasks import router as tasks_router
+from routes.feedback import router as feedback_router
+from routes.annotators import router as annotators_router
+from routes.metrics import router as metrics_router
+from routes.exports import router as exports_router
+
+app.include_router(tasks_router)
+app.include_router(feedback_router)
+app.include_router(annotators_router)
+app.include_router(metrics_router)
+app.include_router(exports_router)
 
 
 @app.get("/health")
