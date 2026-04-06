@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,26 +7,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from core.database import async_session, init_db
+from core.logging import setup_logging, get_logger
+from core.metrics import setup_instrumentator
 from core.redis_client import close_redis, get_redis
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up: initializing database tables...")
+    logger.info("starting_up", action="initializing database tables")
     await init_db()
-    logger.info("Database tables created.")
+    logger.info("database_ready")
 
     r = await get_redis()
     pong = await r.ping()
-    logger.info(f"Redis ping: {pong}")
+    logger.info("redis_ready", ping=pong)
 
     yield
 
     await close_redis()
-    logger.info("Shutdown complete.")
+    logger.info("shutdown_complete")
 
 
 app = FastAPI(
@@ -43,6 +44,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Prometheus metrics
+instrumentator = setup_instrumentator()
+instrumentator.instrument(app).expose(app, endpoint="/metrics")
 
 from routes.tasks import router as tasks_router
 from routes.feedback import router as feedback_router

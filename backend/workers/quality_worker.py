@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import math
 
 from itertools import combinations
@@ -10,11 +9,13 @@ from itertools import combinations
 from sqlalchemy import select
 
 from core.database import async_session, init_db
+from core.logging import setup_logging, get_logger
+from core.metrics import quality_score_histogram, tasks_completed_total
 from core.redis_client import get_redis, close_redis, ANNOTATION_QUEUE
 from models import FeedbackItem, Task, TaskStatus
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+setup_logging()
+logger = get_logger(__name__)
 
 QUALITY_EVENT_CHANNEL = "rl:events:feedback"
 
@@ -98,7 +99,7 @@ async def process_task(task_id: str) -> None:
     async with async_session() as db:
         task = await db.get(Task, task_id)
         if not task:
-            logger.warning(f"Task {task_id} not found, skipping.")
+            logger.warning("task_not_found", task_id=task_id)
             return
 
         result = await db.execute(
@@ -110,7 +111,7 @@ async def process_task(task_id: str) -> None:
         all_feedback = list(result.scalars().all())
 
         if not all_feedback:
-            logger.info(f"Task {task_id}: no feedback yet, skipping.")
+            logger.info("task_no_feedback", task_id=task_id)
             return
 
         # Recompute IAA from rankings
@@ -125,18 +126,26 @@ async def process_task(task_id: str) -> None:
         # Auto-complete when enough annotations
         if len(all_feedback) >= task.min_annotations and task.status == TaskStatus.PENDING:
             task.status = TaskStatus.COMPLETED
-            logger.info(f"Task {task_id}: marked COMPLETED (quality={task.quality_score})")
+            tasks_completed_total.inc()
+            logger.info("task_completed", task_id=task_id, quality_score=task.quality_score)
 
         # Flag low-quality tasks
         if task.quality_score is not None and task.quality_score < 0.3 and len(all_feedback) >= task.min_annotations:
             task.status = TaskStatus.FLAGGED
-            logger.info(f"Task {task_id}: FLAGGED for low quality ({task.quality_score})")
+            logger.info("task_flagged", task_id=task_id, quality_score=task.quality_score)
+
+        # Record quality score in Prometheus histogram
+        if task.quality_score is not None:
+            quality_score_histogram.observe(task.quality_score)
 
         await db.commit()
         logger.info(
-            f"Task {task_id}: processed — iaa={task.iaa}, "
-            f"quality={task.quality_score}, consensus_reward={task.consensus_reward}, "
-            f"status={task.status}"
+            "task_processed",
+            task_id=task_id,
+            iaa=task.iaa,
+            quality_score=task.quality_score,
+            consensus_reward=task.consensus_reward,
+            status=task.status,
         )
 
 
@@ -145,7 +154,7 @@ async def listen_pubsub():
     r = await get_redis()
     pubsub = r.pubsub()
     await pubsub.subscribe(QUALITY_EVENT_CHANNEL)
-    logger.info(f"Subscribed to {QUALITY_EVENT_CHANNEL}")
+    logger.info("pubsub_subscribed", channel=QUALITY_EVENT_CHANNEL)
 
     async for message in pubsub.listen():
         if message["type"] != "message":
@@ -154,7 +163,7 @@ async def listen_pubsub():
             data = json.loads(message["data"])
             task_id = data.get("task_id")
             if task_id:
-                logger.info(f"Received feedback event for task {task_id}")
+                logger.info("feedback_event_received", task_id=task_id)
                 await process_task(task_id)
         except Exception:
             logger.exception("Error processing pubsub message")
@@ -163,20 +172,20 @@ async def listen_pubsub():
 async def poll_queue():
     """Fallback: poll the annotation queue for task IDs."""
     r = await get_redis()
-    logger.info(f"Polling {ANNOTATION_QUEUE} for tasks...")
+    logger.info("queue_polling_started", queue=ANNOTATION_QUEUE)
 
     while True:
         result = await r.brpop(ANNOTATION_QUEUE, timeout=5)
         if result:
             task_id = result[1]
-            logger.info(f"Dequeued task {task_id} from annotation queue")
+            logger.info("task_dequeued", task_id=task_id)
             await process_task(task_id)
 
 
 async def main():
-    logger.info("Quality worker starting...")
+    logger.info("worker_starting")
     await init_db()
-    logger.info("Quality worker ready.")
+    logger.info("worker_ready")
 
     # Run both listeners concurrently
     await asyncio.gather(
@@ -189,4 +198,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Worker stopped.")
+        logger.info("worker_stopped")

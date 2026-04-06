@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.metrics import feedback_submitted_total
 from core.redis_client import get_redis
 from models import FeedbackItem, Task, TaskStatus
 from schemas import FeedbackResponse, FeedbackSubmit
@@ -130,6 +131,8 @@ async def submit_feedback(
     )
     db.add(feedback)
     await db.flush()
+
+    feedback_submitted_total.labels(annotation_type=task.annotation_type).inc()
 
     # Recompute IAA and quality score
     result = await db.execute(

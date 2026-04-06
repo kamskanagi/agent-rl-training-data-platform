@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import async_session, get_db
+from core.metrics import exports_created_total
 from models import Dataset, FeedbackItem, Task, TaskStatus
 from schemas import DatasetCreate, DatasetResponse
 
@@ -226,6 +227,7 @@ async def create_dataset(
     await db.flush()
     await db.refresh(dataset)
 
+    exports_created_total.labels(export_format=payload.export_format).inc()
     background_tasks.add_task(_build_export, dataset.id)
     return dataset
 

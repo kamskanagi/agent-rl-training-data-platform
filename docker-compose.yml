@@ -38,6 +38,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://rl_user:rl_pass@postgres:5432/rl_platform
       REDIS_URL: redis://redis:6379/0
       EXPORT_DIR: /exports
+      LOG_FORMAT: json
     volumes:
       - exports:/exports
     depends_on:
@@ -72,6 +73,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://rl_user:rl_pass@postgres:5432/rl_platform
       REDIS_URL: redis://redis:6379/0
       EXPORT_DIR: /exports
+      LOG_FORMAT: json
     volumes:
       - exports:/exports
     depends_on:
@@ -80,6 +82,39 @@ services:
       redis:
         condition: service_healthy
 
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: rl-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: rl-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   pgdata:
   exports:
+  prometheus_data:
+  grafana_data:

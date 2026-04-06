@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.metrics import tasks_created_total
 from core.redis_client import enqueue_task
 from models import Task, TaskStatus
 from schemas import TaskCreate, TaskListResponse, TaskResponse, TaskUpdate
@@ -25,6 +26,7 @@ async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
     db.add(task)
     await db.flush()
     await db.refresh(task)
+    tasks_created_total.inc()
     await enqueue_task(task.id)
     return task
 
