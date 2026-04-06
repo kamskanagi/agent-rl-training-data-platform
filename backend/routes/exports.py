@@ -18,6 +18,79 @@ router = APIRouter(prefix="/api/exports", tags=["exports"])
 EXPORT_DIR = os.getenv("EXPORT_DIR", "/exports")
 
 
+def _write_parquet(examples: list[dict], path: str) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if not examples:
+        # Write empty parquet
+        schema = pa.schema([
+            ("id", pa.string()),
+            ("prompt", pa.string()),
+            ("chosen", pa.string()),
+            ("rejected", pa.string()),
+            ("reward_chosen", pa.float64()),
+            ("reward_rejected", pa.float64()),
+        ])
+        table = pa.table({}, schema=schema)
+        pq.write_table(table, path)
+        return
+
+    # Flatten to simple columns for Parquet
+    rows = {
+        "id": [ex["id"] for ex in examples],
+        "prompt": [ex["prompt"] for ex in examples],
+        "chosen": [ex["chosen"] for ex in examples],
+        "rejected": [ex["rejected"] for ex in examples],
+        "reward_chosen": [ex["reward_chosen"] for ex in examples],
+        "reward_rejected": [ex["reward_rejected"] for ex in examples],
+        "task_type": [ex.get("task_type", "") for ex in examples],
+        "quality_score": [ex.get("quality_score") for ex in examples],
+        "iaa": [ex.get("iaa") for ex in examples],
+        "num_annotators": [ex.get("num_annotators", 0) for ex in examples],
+    }
+    table = pa.table(rows)
+    pq.write_table(table, path)
+
+
+def _write_huggingface(examples: list[dict], path: str, name: str) -> None:
+    """Write in HuggingFace Datasets format (JSONL + dataset_info.json)."""
+    os.makedirs(path, exist_ok=True)
+
+    # Write data split
+    data_path = os.path.join(path, "train.jsonl")
+    with open(data_path, "w") as f:
+        for ex in examples:
+            row = {
+                "prompt": ex["prompt"],
+                "chosen": ex["chosen"],
+                "rejected": ex["rejected"],
+                "reward_chosen": ex["reward_chosen"],
+                "reward_rejected": ex["reward_rejected"],
+            }
+            f.write(json.dumps(row) + "\n")
+
+    # Write dataset_info.json
+    info = {
+        "dataset_name": name,
+        "description": f"DPO preference dataset exported from RL Training Data Platform",
+        "features": {
+            "prompt": {"dtype": "string", "_type": "Value"},
+            "chosen": {"dtype": "string", "_type": "Value"},
+            "rejected": {"dtype": "string", "_type": "Value"},
+            "reward_chosen": {"dtype": "float64", "_type": "Value"},
+            "reward_rejected": {"dtype": "float64", "_type": "Value"},
+        },
+        "splits": {
+            "train": {"num_examples": len(examples)},
+        },
+        "task_categories": ["text-generation"],
+        "tags": ["dpo", "rlhf", "preference"],
+    }
+    with open(os.path.join(path, "dataset_info.json"), "w") as f:
+        json.dump(info, f, indent=2)
+
+
 def _task_to_rl_example(task: Task, feedbacks: list[FeedbackItem]) -> dict | None:
     """Convert task + feedback into DPO chosen/rejected format."""
     responses = task.responses or []
@@ -107,12 +180,33 @@ async def _build_export(dataset_id: str):
             if example:
                 examples.append(example)
 
-        with open(export_path, "w") as f:
-            for ex in examples:
-                f.write(json.dumps(ex) + "\n")
+        export_format = dataset.export_format or "jsonl"
+
+        if export_format == "parquet":
+            export_path = os.path.join(EXPORT_DIR, f"{dataset_id}.parquet")
+            _write_parquet(examples, export_path)
+        elif export_format == "huggingface":
+            export_path = os.path.join(EXPORT_DIR, f"{dataset_id}_hf")
+            _write_huggingface(examples, export_path, dataset.name)
+        else:
+            with open(export_path, "w") as f:
+                for ex in examples:
+                    f.write(json.dumps(ex) + "\n")
+
+        # Compute reward distribution
+        rewards = [ex["reward_chosen"] for ex in examples if "reward_chosen" in ex]
+        reward_dist = None
+        if rewards:
+            reward_dist = {
+                "min": round(min(rewards), 4),
+                "max": round(max(rewards), 4),
+                "mean": round(sum(rewards) / len(rewards), 4),
+                "count": len(rewards),
+            }
 
         dataset.export_path = export_path
         dataset.task_count = len(examples)
+        dataset.reward_distribution = reward_dist
         dataset.exported_at = datetime.utcnow()
         await db.commit()
 
@@ -157,8 +251,28 @@ async def download_dataset(dataset_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Dataset not found")
     if not dataset.export_path or not os.path.exists(dataset.export_path):
         raise HTTPException(status_code=404, detail="Export not ready")
-    return FileResponse(
-        dataset.export_path,
-        media_type="application/jsonl",
-        filename=f"{dataset.name}.jsonl",
-    )
+
+    fmt = dataset.export_format or "jsonl"
+
+    if fmt == "parquet":
+        return FileResponse(
+            dataset.export_path,
+            media_type="application/octet-stream",
+            filename=f"{dataset.name}.parquet",
+        )
+    elif fmt == "huggingface":
+        # Return the train.jsonl from the HF directory
+        hf_data = os.path.join(dataset.export_path, "train.jsonl")
+        if not os.path.exists(hf_data):
+            raise HTTPException(status_code=404, detail="Export not ready")
+        return FileResponse(
+            hf_data,
+            media_type="application/jsonl",
+            filename=f"{dataset.name}_train.jsonl",
+        )
+    else:
+        return FileResponse(
+            dataset.export_path,
+            media_type="application/jsonl",
+            filename=f"{dataset.name}.jsonl",
+        )

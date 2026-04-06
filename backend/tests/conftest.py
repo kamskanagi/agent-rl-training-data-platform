@@ -91,6 +91,7 @@ async def client():
          patch("routes.metrics.cache_get", mock_cache_get), \
          patch("routes.metrics.cache_set", mock_cache_set), \
          patch("routes.metrics.get_redis", mock_get_redis), \
+         patch("routes.feedback.get_redis", mock_get_redis), \
          patch("routes.exports._build_export", mock_build_export):
         from main import app
         app.dependency_overrides[get_db] = override_get_db

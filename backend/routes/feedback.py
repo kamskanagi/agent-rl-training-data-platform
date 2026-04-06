@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from itertools import combinations
 
@@ -8,8 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
+from core.redis_client import get_redis
 from models import FeedbackItem, Task, TaskStatus
 from schemas import FeedbackResponse, FeedbackSubmit
+
+QUALITY_EVENT_CHANNEL = "rl:events:feedback"
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
@@ -150,6 +154,17 @@ async def submit_feedback(
 
     await db.flush()
     await db.refresh(feedback)
+
+    # Publish event for quality worker
+    try:
+        r = await get_redis()
+        await r.publish(
+            QUALITY_EVENT_CHANNEL,
+            json.dumps({"task_id": payload.task_id, "feedback_id": feedback.id}),
+        )
+    except Exception:
+        pass  # Worker will pick up via queue fallback
+
     return feedback
 
 
