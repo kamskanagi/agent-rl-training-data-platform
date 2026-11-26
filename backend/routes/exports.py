@@ -158,8 +158,10 @@ async def _build_export(dataset_id: str):
         filters = dataset.filters or {}
         query = select(Task).where(Task.status == TaskStatus.COMPLETED)
 
-        if filters.get("min_quality"):
-            query = query.where(Task.quality_score >= filters["min_quality"])
+        # The Exports page sends "min_quality_score"; "min_quality" is kept for API callers.
+        min_quality = filters.get("min_quality_score", filters.get("min_quality"))
+        if min_quality:
+            query = query.where(Task.quality_score >= min_quality)
         if filters.get("min_iaa"):
             query = query.where(Task.iaa >= filters["min_iaa"])
         if filters.get("annotation_type"):
@@ -226,6 +228,10 @@ async def create_dataset(
     db.add(dataset)
     await db.flush()
     await db.refresh(dataset)
+
+    # Commit before scheduling: the builder opens its own session and must be able
+    # to see this row. get_db's commit may only run after the background task starts.
+    await db.commit()
 
     exports_created_total.labels(export_format=payload.export_format).inc()
     background_tasks.add_task(_build_export, dataset.id)
