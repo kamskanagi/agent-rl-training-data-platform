@@ -1,10 +1,17 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type Task } from '../api/client';
+import { api, hasAuthToken, setAuthToken, type Task } from '../api/client';
+
+/** Click order (response indices, best first) -> rank of each response, 1 = best. */
+function toRanks(order: number[], count: number): number[] {
+  const ranks = new Array<number>(count);
+  order.forEach((responseIdx, position) => { ranks[responseIdx] = position + 1; });
+  return ranks;
+}
 
 export default function Annotate() {
   const queryClient = useQueryClient();
-  const [annotatorId, setAnnotatorId] = useState('');
+  const [tokenInput, setTokenInput] = useState('');
   const [currentTask, setCurrentTask] = useState<Task | null>(null);
   const [ranking, setRanking] = useState<number[]>([]);
   const [criterionScores, setCriterionScores] = useState<Record<string, number>>({});
@@ -12,10 +19,26 @@ export default function Annotate() {
   const [critiqueText, setCritiqueText] = useState('');
   const [banner, setBanner] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
-  const { data: annotators } = useQuery({
-    queryKey: ['annotators'],
-    queryFn: api.getAnnotators,
+  // Who the stored token belongs to. A 401 here means the token is missing or invalid.
+  const { data: me, error: meError } = useQuery({
+    queryKey: ['me'],
+    queryFn: api.getMe,
+    enabled: hasAuthToken(),
+    retry: false,
   });
+
+  const signIn = () => {
+    setAuthToken(tokenInput.trim());
+    setTokenInput('');
+    queryClient.resetQueries({ queryKey: ['me'] });
+  };
+
+  const signOut = () => {
+    setAuthToken(null);
+    setCurrentTask(null);
+    queryClient.removeQueries({ queryKey: ['me'] });
+    setBanner(null);
+  };
 
   const fetchNextTask = useMutation({
     mutationFn: (id: string) => api.getNextTask(id),
@@ -33,7 +56,7 @@ export default function Annotate() {
         setCriterionScores(scores);
       }
     },
-    onError: () => setBanner({ type: 'error', msg: 'No tasks available in queue' }),
+    onError: () => setBanner({ type: 'error', msg: 'No tasks available for you right now' }),
   });
 
   const submitMutation = useMutation({
@@ -54,12 +77,14 @@ export default function Annotate() {
     });
   };
 
+  const responseCount = currentTask?.responses?.length ?? 0;
+  const rankingComplete = responseCount < 2 || ranking.length === responseCount;
+
   const handleSubmit = () => {
-    if (!currentTask || !annotatorId) return;
+    if (!currentTask || !me || !rankingComplete) return;
     submitMutation.mutate({
       task_id: currentTask.id,
-      annotator_id: annotatorId,
-      ranking: ranking.length ? ranking : undefined,
+      ranking: responseCount >= 2 ? toRanks(ranking, responseCount) : undefined,
       criterion_scores: Object.keys(criterionScores).length ? criterionScores : undefined,
       confidence,
       critique_text: critiqueText || undefined,
@@ -76,29 +101,55 @@ export default function Annotate() {
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'flex', gap: 12, alignItems: 'end' }}>
-          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
-            <label>Select Annotator</label>
-            <select value={annotatorId} onChange={e => setAnnotatorId(e.target.value)}>
-              <option value="">Choose annotator...</option>
-              {annotators?.map(a => (
-                <option key={a.id} value={a.id}>{a.name} ({a.email})</option>
-              ))}
-            </select>
-          </div>
-          <button
-            className="btn btn-primary"
-            disabled={!annotatorId || fetchNextTask.isPending}
-            onClick={() => fetchNextTask.mutate(annotatorId)}
-          >
-            Get Next Task
-          </button>
+          {me ? (
+            <>
+              <div style={{ flex: 1 }}>
+                <label>Signed in as</label>
+                <div style={{ fontSize: 15 }}>
+                  {me.name} <span style={{ color: 'var(--text-muted)' }}>({me.email})</span>
+                  <span style={{ marginLeft: 12, fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-muted)' }}>
+                    reliability {me.reliability_score.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+              <button className="btn btn-secondary" onClick={signOut}>Sign out</button>
+              <button
+                className="btn btn-primary"
+                disabled={fetchNextTask.isPending}
+                onClick={() => fetchNextTask.mutate(me.id)}
+              >
+                Get Next Task
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                <label>Annotator API token</label>
+                <input
+                  type="password"
+                  value={tokenInput}
+                  onChange={e => setTokenInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && tokenInput.trim()) signIn(); }}
+                  placeholder="Paste the token you received when you were registered"
+                />
+                {meError && hasAuthToken() && (
+                  <div style={{ color: 'var(--error)', fontSize: 13, marginTop: 6 }}>
+                    That token was not recognised.
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-primary" disabled={!tokenInput.trim()} onClick={signIn}>
+                Sign in
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {!currentTask ? (
         <div className="card">
           <div className="empty-state">
-            <p>Select an annotator and click "Get Next Task" to start annotating</p>
+            <p>{me ? 'Click "Get Next Task" to start annotating' : 'Sign in with your annotator token to start annotating'}</p>
           </div>
         </div>
       ) : (
@@ -204,9 +255,13 @@ export default function Annotate() {
             className="btn btn-primary"
             style={{ width: '100%', justifyContent: 'center', padding: '12px 20px', fontSize: 15 }}
             onClick={handleSubmit}
-            disabled={submitMutation.isPending}
+            disabled={submitMutation.isPending || !rankingComplete}
           >
-            {submitMutation.isPending ? 'Submitting...' : 'Submit Feedback'}
+            {submitMutation.isPending
+              ? 'Submitting...'
+              : rankingComplete
+                ? 'Submit Feedback'
+                : `Rank all ${responseCount} responses to submit`}
           </button>
         </>
       )}

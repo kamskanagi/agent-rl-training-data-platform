@@ -41,6 +41,12 @@ async def mock_enqueue_task(task_id: str):
     mock_redis_queue.append(task_id)
 
 
+async def mock_requeue_task(task_id: str):
+    while task_id in mock_redis_queue:
+        mock_redis_queue.remove(task_id)
+    mock_redis_queue.append(task_id)
+
+
 async def mock_dequeue_task(timeout: int = 0):
     if mock_redis_queue:
         return mock_redis_queue.pop(0)
@@ -60,6 +66,20 @@ async def mock_get_redis():
     mock.ping = AsyncMock(return_value=True)
     mock.llen = AsyncMock(return_value=len(mock_redis_queue))
     return mock
+
+
+async def register(client, email: str, name: str | None = None) -> tuple[str, dict]:
+    """Register an annotator; return (annotator_id, auth headers)."""
+    data = (await client.post("/api/annotators/", json={
+        "email": email, "name": name or email.split("@")[0],
+    })).json()
+    return data["id"], {"Authorization": f"Bearer {data['api_token']}"}
+
+
+@pytest.fixture
+def annotation_queue() -> list[str]:
+    """The in-memory list backing the mocked Redis annotation queue."""
+    return mock_redis_queue
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -92,6 +112,8 @@ async def client():
          patch("routes.metrics.cache_set", mock_cache_set), \
          patch("routes.metrics.get_redis", mock_get_redis), \
          patch("routes.feedback.get_redis", mock_get_redis), \
+         patch("routes.feedback.requeue_task", mock_requeue_task), \
+         patch("routes.annotators.requeue_task", mock_requeue_task), \
          patch("routes.exports._build_export", mock_build_export):
         from main import app
         app.dependency_overrides[get_db] = override_get_db

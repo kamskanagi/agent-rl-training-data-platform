@@ -53,7 +53,8 @@ class TaskListResponse(BaseModel):
 
 class FeedbackSubmit(BaseModel):
     task_id: str
-    annotator_id: str
+    # The annotator is taken from the bearer token. If sent, it must match the token.
+    annotator_id: str | None = None
     ranking: list[int] | None = None
     scalar_reward: float | None = None
     binary_label: bool | None = None
@@ -98,6 +99,11 @@ class AnnotatorResponse(BaseModel):
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class AnnotatorCreated(AnnotatorResponse):
+    """Returned once at registration. The token cannot be retrieved again."""
+    api_token: str
 
 
 # ── Metrics ───────────────────────────────────────────────────────────

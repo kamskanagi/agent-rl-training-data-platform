@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from routes.exports import _build_export as real_build_export
+from tests.conftest import register
 
 
 @pytest.mark.asyncio
@@ -54,12 +55,10 @@ async def _completed_task(client, prompt, rewards):
         "min_annotations": len(rewards),
     })).json()
     for i, reward in enumerate(rewards):
-        ann = (await client.post("/api/annotators/", json={
-            "email": f"{prompt}-{i}@test.com", "name": f"{prompt}-{i}",
-        })).json()
+        _, headers = await register(client, f"{prompt}-{i}@test.com")
         await client.post("/api/feedback/", json={
-            "task_id": task["id"], "annotator_id": ann["id"], "scalar_reward": reward,
-        })
+            "task_id": task["id"], "scalar_reward": reward,
+        }, headers=headers)
     return (await client.get(f"/api/tasks/{task['id']}")).json()
 
 

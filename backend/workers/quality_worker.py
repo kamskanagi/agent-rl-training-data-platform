@@ -8,7 +8,7 @@ from sqlalchemy import select
 from core.database import async_session, init_db
 from core.logging import setup_logging, get_logger
 from core.metrics import quality_score_histogram, tasks_completed_total
-from core.redis_client import get_redis, close_redis, ANNOTATION_QUEUE
+from core.redis_client import get_redis, close_redis
 from core.scoring import consensus_reward, fleiss_kappa, load_reliability, quality_score
 from models import FeedbackItem, Task, TaskStatus
 
@@ -93,17 +93,28 @@ async def listen_pubsub():
             logger.exception("Error processing pubsub message")
 
 
-async def poll_queue():
-    """Fallback: poll the annotation queue for task IDs."""
-    r = await get_redis()
-    logger.info("queue_polling_started", queue=ANNOTATION_QUEUE)
+SWEEP_INTERVAL_SECONDS = 60
 
+
+async def sweep_pending():
+    """Fallback for missed Pub/Sub events: periodically re-score pending tasks that
+    have feedback. (This used to pop the annotation queue, which stole tasks from
+    annotators; that queue now belongs to the annotators alone.)"""
+    logger.info("sweep_started", interval_seconds=SWEEP_INTERVAL_SECONDS)
     while True:
-        result = await r.brpop(ANNOTATION_QUEUE, timeout=5)
-        if result:
-            task_id = result[1]
-            logger.info("task_dequeued", task_id=task_id)
-            await process_task(task_id)
+        await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(Task.id)
+                    .where(Task.status == TaskStatus.PENDING)
+                    .where(Task.id.in_(select(FeedbackItem.task_id)))
+                )
+                task_ids = list(result.scalars().all())
+            for task_id in task_ids:
+                await process_task(task_id)
+        except Exception:
+            logger.exception("sweep_failed")
 
 
 async def main():
@@ -114,7 +125,7 @@ async def main():
     # Run both listeners concurrently
     await asyncio.gather(
         listen_pubsub(),
-        poll_queue(),
+        sweep_pending(),
     )
 
 

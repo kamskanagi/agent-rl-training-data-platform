@@ -6,10 +6,28 @@ class ApiError extends Error {
   }
 }
 
+// Annotator API token. Kept in sessionStorage so it is cleared when the tab closes.
+const TOKEN_KEY = 'rl.annotatorToken';
+let authToken: string | null = sessionStorage.getItem(TOKEN_KEY);
+
+export function setAuthToken(token: string | null) {
+  authToken = token;
+  if (token) sessionStorage.setItem(TOKEN_KEY, token);
+  else sessionStorage.removeItem(TOKEN_KEY);
+}
+
+export function hasAuthToken() {
+  return authToken !== null;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...options?.headers,
+    },
   });
   if (!res.ok) {
     const body = await res.text();
@@ -68,7 +86,9 @@ export interface FeedbackItem {
 
 export interface FeedbackSubmit {
   task_id: string;
-  annotator_id: string;
+  // The annotator comes from the API token; annotator_id is optional and must match it.
+  annotator_id?: string;
+  // ranking[i] = rank of response i, 1 = best.
   ranking?: number[];
   scalar_reward?: number;
   binary_label?: boolean;
@@ -162,7 +182,8 @@ export const api = {
   // Annotators
   getAnnotators: () => request<Annotator[]>('/api/annotators/'),
   createAnnotator: (data: { email: string; name: string; role?: string; expertise_tags?: string[] }) =>
-    request<Annotator>('/api/annotators/', { method: 'POST', body: JSON.stringify(data) }),
+    request<Annotator & { api_token: string }>('/api/annotators/', { method: 'POST', body: JSON.stringify(data) }),
+  getMe: () => request<Annotator>('/api/annotators/me'),
   getNextTask: (annotatorId: string) =>
     request<Task>(`/api/annotators/${annotatorId}/next-task`),
 

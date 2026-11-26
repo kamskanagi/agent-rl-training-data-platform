@@ -31,6 +31,13 @@ async def enqueue_task(task_id: str) -> None:
     await r.lpush(ANNOTATION_QUEUE, task_id)
 
 
+async def requeue_task(task_id: str) -> None:
+    """Put a task at the back of the queue, keeping at most one entry for it."""
+    r = await get_redis()
+    await r.lrem(ANNOTATION_QUEUE, 0, task_id)
+    await r.lpush(ANNOTATION_QUEUE, task_id)
+
+
 async def dequeue_task(timeout: int = 0) -> str | None:
     r = await get_redis()
     result = await r.brpop(ANNOTATION_QUEUE, timeout=timeout)

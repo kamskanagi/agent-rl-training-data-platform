@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from tests.conftest import register
+
 
 @pytest.mark.asyncio
 async def test_create_annotator(client):
@@ -58,22 +60,16 @@ async def test_next_task(client):
     task_resp = await client.post("/api/tasks/", json={"prompt": "Queue task"})
     task_id = task_resp.json()["id"]
 
-    ann_resp = await client.post("/api/annotators/", json={
-        "email": "next@test.com", "name": "Next",
-    })
-    ann_id = ann_resp.json()["id"]
+    ann_id, headers = await register(client, "next@test.com")
 
-    resp = await client.get(f"/api/annotators/{ann_id}/next-task")
+    resp = await client.get(f"/api/annotators/{ann_id}/next-task", headers=headers)
     assert resp.status_code == 200
     assert resp.json()["id"] == task_id
 
 
 @pytest.mark.asyncio
 async def test_next_task_empty_queue(client):
-    ann_resp = await client.post("/api/annotators/", json={
-        "email": "empty@test.com", "name": "Empty",
-    })
-    ann_id = ann_resp.json()["id"]
+    ann_id, headers = await register(client, "empty@test.com")
 
-    resp = await client.get(f"/api/annotators/{ann_id}/next-task")
+    resp = await client.get(f"/api/annotators/{ann_id}/next-task", headers=headers)
     assert resp.status_code == 404

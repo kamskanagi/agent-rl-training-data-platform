@@ -133,3 +133,72 @@ async def load_reliability(db: AsyncSession, feedbacks: list[FeedbackItem]) -> d
         select(Annotator.id, Annotator.reliability_score).where(Annotator.id.in_(ids))
     )
     return {aid: score for aid, score in result.all() if score is not None}
+
+
+# --- Annotator reliability -----------------------------------------------------
+
+# Pseudo-observations at full reliability: a new annotator is not judged on one task.
+RELIABILITY_PRIOR_WEIGHT = 3.0
+
+
+def pairwise_agreement(a: FeedbackItem, b: FeedbackItem) -> float | None:
+    """Agreement in [0, 1] between two feedback items on the same task, or None
+    if they are not comparable (different feedback types or ranking lengths)."""
+    if a.ranking and b.ranking and len(a.ranking) == len(b.ranking) >= 2:
+        pairs = list(combinations(range(len(a.ranking)), 2))
+        same = sum(
+            1 for i, j in pairs
+            if (a.ranking[i] < a.ranking[j]) == (b.ranking[i] < b.ranking[j])
+        )
+        return same / len(pairs)
+    ra, rb = _absolute_reward(a), _absolute_reward(b)
+    if ra is not None and rb is not None:
+        return max(0.0, 1.0 - abs(ra - rb))
+    return None
+
+
+def annotator_agreement(feedbacks: list[FeedbackItem], annotator_id: str) -> list[float]:
+    """One agreement sample per task the annotator worked on.
+
+    A sample is the annotator's mean agreement with the other (unflagged) annotators
+    on that task. Feedback that was flagged counts as 0. Tasks with nothing to compare
+    against are skipped.
+    """
+    by_task: dict[str, list[FeedbackItem]] = {}
+    for fb in feedbacks:
+        by_task.setdefault(fb.task_id, []).append(fb)
+
+    samples: list[float] = []
+    for items in by_task.values():
+        mine = [fb for fb in items if fb.annotator_id == annotator_id]
+        if not mine:
+            continue
+        if mine[0].flagged:
+            samples.append(0.0)
+            continue
+        others = [fb for fb in items if fb.annotator_id != annotator_id and not fb.flagged]
+        scores = [s for o in others if (s := pairwise_agreement(mine[0], o)) is not None]
+        if scores:
+            samples.append(sum(scores) / len(scores))
+    return samples
+
+
+def reliability_from_samples(samples: list[float]) -> float:
+    """Mean agreement shrunk toward 1.0, so reliability moves as evidence builds up."""
+    return (RELIABILITY_PRIOR_WEIGHT + sum(samples)) / (RELIABILITY_PRIOR_WEIGHT + len(samples))
+
+
+async def update_reliability(db: AsyncSession, annotator_ids: set[str]) -> None:
+    """Recompute reliability_score and avg_agreement_rate for these annotators
+    from every task they have worked on."""
+    if not annotator_ids:
+        return
+    task_ids = select(FeedbackItem.task_id).where(FeedbackItem.annotator_id.in_(annotator_ids))
+    result = await db.execute(select(FeedbackItem).where(FeedbackItem.task_id.in_(task_ids)))
+    feedbacks = list(result.scalars().all())
+
+    annotators = await db.execute(select(Annotator).where(Annotator.id.in_(annotator_ids)))
+    for annotator in annotators.scalars():
+        samples = annotator_agreement(feedbacks, annotator.id)
+        annotator.reliability_score = round(reliability_from_samples(samples), 4)
+        annotator.avg_agreement_rate = round(sum(samples) / len(samples), 4) if samples else None

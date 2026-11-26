@@ -88,18 +88,19 @@ DATABASE_URL=postgresql+asyncpg://rl_user:rl_pass@localhost:5432/rl_platform \
 | `DELETE` | `/api/tasks/{id}` | Delete a task |
 | `POST` | `/api/tasks/{id}/flag` | Flag a task |
 | **Feedback** | | |
-| `POST` | `/api/feedback/` | Submit feedback |
+| `POST` | `/api/feedback/` | Submit feedback (requires annotator token) |
 | `GET` | `/api/feedback/task/{id}` | Get feedback for a task |
 | `POST` | `/api/feedback/{id}/flag` | Flag feedback |
 | **Annotators** | | |
-| `POST` | `/api/annotators/` | Register an annotator |
+| `POST` | `/api/annotators/` | Register an annotator (returns its API token once) |
+| `GET` | `/api/annotators/me` | Annotator for the given token |
 | `GET` | `/api/annotators/` | List annotators |
 | `GET` | `/api/annotators/{id}` | Get annotator details |
-| `GET` | `/api/annotators/{id}/next` | Get next task from queue |
+| `GET` | `/api/annotators/{id}/next-task` | Get next task from queue (requires that annotator's token) |
 | **Metrics** | | |
-| `GET` | `/api/metrics/` | Platform-wide metrics |
-| `GET` | `/api/metrics/training-runs` | List training runs |
-| `GET` | `/api/metrics/training-runs/{id}` | Get training run details |
+| `GET` | `/api/metrics/platform` | Platform-wide metrics |
+| `GET` | `/api/metrics/training` | List training runs |
+| `GET` | `/api/metrics/training/{id}` | Get training run details |
 | **Exports** | | |
 | `POST` | `/api/exports/datasets` | Create a dataset export |
 | `GET` | `/api/exports/datasets` | List datasets |

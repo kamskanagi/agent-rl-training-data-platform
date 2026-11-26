@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -65,6 +65,10 @@ class Task(Base):
 
 class FeedbackItem(Base):
     __tablename__ = "feedback_items"
+    # One feedback item per annotator per task: duplicates would inflate agreement.
+    __table_args__ = (
+        UniqueConstraint("task_id", "annotator_id", name="uq_feedback_task_annotator"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id"), nullable=False)
@@ -96,6 +100,8 @@ class Annotator(Base):
     role: Mapped[str] = mapped_column(String(50), default="annotator")
     expertise_tags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     reliability_score: Mapped[float] = mapped_column(Float, default=1.0)
+    # SHA-256 of the annotator's API token; the token itself is never stored.
+    api_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     avg_agreement_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
